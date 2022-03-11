@@ -47,7 +47,7 @@ train_list = "dataset/ade20k/list/training_alt.txt"
 valid_list = "dataset/ade20k/list/validation_alt.txt"
 test_list = "dataset/ade20k/list/validation.txt"
 batch_size = 8
-epochs = 25
+epochs = 3
 n_classes = 150
 
 def mean_auc(classification_labels, classification_predictions):
@@ -194,13 +194,20 @@ def validate(model, data_list=valid_list):
 
 def main(model, decay=1e-4):
     # define optimizer
-    learning_rate = 5e-3
-    modules_new = [model.context_head.layer1, model.context_head.norm1, model.context_head.layer2]
-    params_list = []
-    for module in modules_new:
-        params_list.append(dict(params=module.parameters(), lr=learning_rate))
-    optimizer = torch.optim.Adam(params_list, lr=learning_rate, weight_decay=decay)
+    learning_rate = 1e-4
+    # modules_new = [model.context_head.layer1, model.context_head.layer2]
+    # params_list = []
+    # for module in modules_new:
+    #     params_list.append(dict(params=module.parameters(), lr=learning_rate))
+    # optimizer = torch.optim.Adam(params_list, lr=learning_rate, weight_decay=decay)
     
+    params_list = []
+    for name, child in (model.named_children()):
+        if name.find('BatchNorm') != -1:
+            for param in child.parameters():
+                params_list.append(dict(param, lr=learning_rate))
+    optimizer = torch.optim.SGD(params_list, lr=learning_rate, weight_decay=decay, momentum=0.9)
+
     train_transform = transform.Compose([
         transform.RandScale([0.5, 2.0]),
         transform.RandRotate([-10, 10], padding=mean, ignore_label=255),
@@ -229,7 +236,7 @@ def main(model, decay=1e-4):
         test_loss, test_auc = validate(model, data_list=test_list)
         print(f">>> TEST SCORE FOR EPOCH {epoch}: {np.round(test_auc, 4)}, loss: {test_loss}")
         test_epochs.append((test_loss, test_auc))
-        save_path = f"upernet_swin_classification_{epoch}_v2-l2.pth"
+        save_path = f"upernet_resnet_cls_{epoch}.pth"
         print(f"Saving to {save_path}")
         torch.save({'state_dict': model.state_dict(), 'optimizer': optimizer.state_dict()}, save_path)
         
@@ -241,5 +248,5 @@ def main(model, decay=1e-4):
 if __name__ == "__main__":
     film_layers = 1 if len(sys.argv) < 2 else int(sys.argv[1])
     print(f"Training with {film_layers} new layers")
-    model_conv = UPerNet(backbone="swin", film=False, context_layers=2, learn_context=True).to("cuda")
+    model_conv = UPerNet(backbone="resnet", film=False, context_layers=2, learn_context=True).to("cuda")
     val_hist_conv = main(model_conv)

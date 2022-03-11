@@ -46,8 +46,8 @@ data_root = "dataset/ade20k"
 train_list = "dataset/ade20k/list/training_alt.txt"
 valid_list = "dataset/ade20k/list/validation_alt.txt"
 test_list = "dataset/ade20k/list/validation.txt"
-batch_size = 8
-epochs = 25
+batch_size = 6
+epochs = 3
 n_classes = 150
 
 def train(train_loader, model, optimizer, epoch):
@@ -94,7 +94,7 @@ def train(train_loader, model, optimizer, epoch):
         end = time.time()
 
         current_iter = epoch * len(train_loader) + i + 1
-        current_lr = poly_learning_rate(5e-3, current_iter, max_iter, power=0.9)
+        current_lr = poly_learning_rate(5e-4, current_iter, max_iter, power=0.9)
         print(f"Reducing LR to {current_lr}")
         for index in range(0, len(optimizer.param_groups)):
             optimizer.param_groups[index]['lr'] = current_lr
@@ -143,7 +143,7 @@ def validate(model, data_list=valid_list):
         transform.ToTensor(),
         transform.Normalize(mean=mean, std=std)])
     val_data = dataset.SemData(split='val', data_root=data_root, data_list=data_list, transform=val_transform, context_x=False, context_y=True, context_type="classification")
-    val_loader = torch.utils.data.DataLoader(val_data, batch_size=batch_size, shuffle=False, num_workers=4, pin_memory=True, sampler=None)
+    val_loader = torch.utils.data.DataLoader(val_data, batch_size=batch_size, shuffle=False, num_workers=6, pin_memory=True, sampler=None)
     batch_time = AverageMeter()
     data_time = AverageMeter()
     intersection_meter = AverageMeter()
@@ -194,14 +194,29 @@ def validate(model, data_list=valid_list):
 
     return loss_meter.avg, np.round(mIoU, 4), np.round(mAcc, 4), np.round(allAcc, 4)
 
-def main(model, decay=1e-4, num_layers=1):
+def main(model, decay=5e-4, num_layers=1):
     # define optimizer
-    learning_rate = 5e-3
-    modules_new = [model.film_head.layer1, model.film_head.norm1, model.film_head.layer2]
+    learning_rate = 5e-4
+    
+    # modules_new = [model.context_head.layer1, model.context_head.layer2]
+    # params_list = []
+    # for module in modules_new:
+    #     params_list.append(dict(params=module.parameters(), lr=learning_rate))
+    # optimizer = torch.optim.Adam(params_list, lr=learning_rate, weight_decay=decay)
+    
+    # params_list = []
+    # for name, child in (model.named_children()):
+    #     if name.find('BatchNorm') != -1:
+    #         for param in child.parameters():
+    #             params_list.append(dict(param, lr=learning_rate))
+    modules_list = [model.context_head.layer1, model.context_head.layer2, model.film_head.layer1, model.film_head.layer2, model.decode_head.conv_seg
+                    ]
     params_list = []
-    for module in modules_new:
+    for module in modules_list:
         params_list.append(dict(params=module.parameters(), lr=learning_rate))
-    optimizer = torch.optim.Adam(params_list, lr=learning_rate, weight_decay=decay)
+    # params_list = [dict(model.parameters(), lr=learning_rate)]
+    optimizer = torch.optim.SGD(params_list, lr=learning_rate, weight_decay=decay, momentum=0.9)
+
     
     train_transform = transform.Compose([
         transform.RandScale([0.5, 2.0]),
@@ -214,7 +229,7 @@ def main(model, decay=1e-4, num_layers=1):
     ])
 
     train_data = dataset.SemData(split='train', data_root=data_root, data_list=train_list, transform=train_transform, context_x=False, context_y=True, context_type="classification")
-    train_loader = torch.utils.data.DataLoader(train_data, batch_size=batch_size, shuffle=True, num_workers=4, pin_memory=True, sampler=None, drop_last=True)
+    train_loader = torch.utils.data.DataLoader(train_data, batch_size=batch_size, shuffle=True, num_workers=6, pin_memory=True, sampler=None, drop_last=True)
 
     train_epochs = [ ]
     val_epochs = [ ]
@@ -234,7 +249,7 @@ def main(model, decay=1e-4, num_layers=1):
         print(f">>> TEST SCORE FOR EPOCH {epoch}: {np.round(test_score, 4)}, loss: {test_loss}")
         test_epochs.append((test_mIoU, test_allAcc, test_score))
 
-        save_path = f"film_class_{epoch}_f{num_layers}v2.pth"
+        save_path = f"uper_film_resnet_cls_{epoch}.pth"
         print(f"Saving to {save_path}")
         torch.save({'state_dict': model.state_dict(), 'optimizer': optimizer.state_dict()}, save_path)
         
@@ -242,11 +257,11 @@ def main(model, decay=1e-4, num_layers=1):
     print(f"Test Epochs: {test_epochs}")
     return val_epochs, test_epochs
 
-classification_weights = "upernet_swin_classification_9_v2.pth"
+classification_weights = "uper_film_resnet_cls_2.pth"
 
 if __name__ == "__main__":
     film_layers = 1 if len(sys.argv) < 2 else int(sys.argv[1])
     print(f"Training with {film_layers} new layers")
-    model_conv = UPerNet(backbone="swin", learn_context=True, init_weights=classification_weights, context_layers=1, film=True, film_layers=2).to("cuda")
+    model_conv = UPerNet(backbone="resnet", learn_context=True, init_weights=classification_weights, context_layers=2, film=True, film_layers=2).to("cuda")
     val_hist_conv = main(model_conv, num_layers=film_layers)
     print(val_hist_conv)  # print val results again
