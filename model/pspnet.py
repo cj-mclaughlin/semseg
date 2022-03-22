@@ -5,7 +5,7 @@ import torch.nn.functional as F
 import model.resnet as models
 
 class PPM(nn.Module):
-    def __init__(self, in_dim, reduction_dim, bins):
+    def __init__(self, in_dim, reduction_dim, bins, output_size_frac=8):
         super(PPM, self).__init__()
         self.features = []
         for bin in bins:
@@ -16,17 +16,18 @@ class PPM(nn.Module):
                 nn.ReLU(inplace=True)
             ))
         self.features = nn.ModuleList(self.features)
+        self.upsample = nn.Upsample(size=(512 // output_size_frac, 512 // output_size_frac), mode="bilinear", align_corners=False)
 
     def forward(self, x):
         x_size = x.size()
-        out = [x]
+        out = [self.upsample(x)]
         for f in self.features:
-            out.append(F.interpolate(f(x), x_size[2:], mode='bilinear', align_corners=True))
+            out.append(self.upsample(f(x)))
         return torch.cat(out, 1)
 
 
 class PSPNet(nn.Module):
-    def __init__(self, layers=50, bins=(1, 2, 3, 6), dropout=0.1, classes=2, zoom_factor=8, use_ppm=True, criterion=nn.CrossEntropyLoss(ignore_index=255), pretrained=True):
+    def __init__(self, layers=50, bins=(1, 2, 3, 6), dropout=0.1, classes=2, zoom_factor=8, ppm_frac=8, use_ppm=True, criterion=nn.CrossEntropyLoss(ignore_index=255), pretrained=True):
         super(PSPNet, self).__init__()
         assert layers in [50, 101, 152]
         assert 2048 % len(bins) == 0
@@ -58,7 +59,7 @@ class PSPNet(nn.Module):
 
         fea_dim = 2048
         if use_ppm:
-            self.ppm = PPM(fea_dim, int(fea_dim/len(bins)), bins)
+            self.ppm = PPM(fea_dim, int(fea_dim/len(bins)), bins, output_size_frac=ppm_frac)
             fea_dim *= 2
         self.cls = nn.Sequential(
             nn.Conv2d(fea_dim, 512, kernel_size=3, padding=1, bias=False),

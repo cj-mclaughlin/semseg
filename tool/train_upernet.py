@@ -46,7 +46,7 @@ data_root = "dataset/ade20k"
 train_list = "dataset/ade20k/list/training_alt.txt"
 valid_list = "dataset/ade20k/list/validation_alt.txt"
 test_list = "dataset/ade20k/list/validation.txt"
-batch_size = 6
+batch_size = 4
 epochs = 3
 n_classes = 150
 
@@ -143,7 +143,7 @@ def validate(model, data_list=valid_list):
         transform.ToTensor(),
         transform.Normalize(mean=mean, std=std)])
     val_data = dataset.SemData(split='val', data_root=data_root, data_list=data_list, transform=val_transform, context_x=False, context_y=True, context_type="classification")
-    val_loader = torch.utils.data.DataLoader(val_data, batch_size=batch_size, shuffle=False, num_workers=6, pin_memory=True, sampler=None)
+    val_loader = torch.utils.data.DataLoader(val_data, batch_size=batch_size, shuffle=False, num_workers=4, pin_memory=True, sampler=None)
     batch_time = AverageMeter()
     data_time = AverageMeter()
     intersection_meter = AverageMeter()
@@ -156,7 +156,9 @@ def validate(model, data_list=valid_list):
     ious = []
     accs = []
 
-    for i, (input, target) in enumerate(val_loader):
+    grads = {i: [] for i in range(5)}
+
+    for iteration, (input, target) in enumerate(val_loader):
         # seg_target = target
         seg_target, context_target = target
         data_time.update(time.time() - end)
@@ -165,34 +167,44 @@ def validate(model, data_list=valid_list):
         context_target = [ct.float().cuda(non_blocking=True) for ct in context_target]
         context_target = context_target[0]  # only look at global scale for now
 
-        output, loss = model(input, y=seg_target, context=context_target)
+        losses = model(input, y=[seg_target, context_target]) #, context=context_target)
+        for i in range(len(losses)):
+            loss = losses[i].mean()
+            loss.backward(retain_graph=True)
+            grad = model.decode_head.conv_seg.weight.grad
+            grads[i].append(grad.cpu().numpy())
 
-        n = input.size(0)
-        loss_meter.update(loss.item(), n)
+        print(iteration)
+        if iteration == 100:
+            print("100 batches done")
 
-        # baseline model
-        output = output.max(1)[1]
+    #     n = input.size(0)
+    #     loss_meter.update(loss.item(), n)
+
+    #     # baseline model
+    #     output = output.max(1)[1]
         
-        intersection, union, target = intersectionAndUnionGPU(output, seg_target, 150, 255)
+    #     intersection, union, target = intersectionAndUnionGPU(output, seg_target, 150, 255)
         
-        intersection, union, target = intersection.cpu().numpy(), union.cpu().numpy(), target.cpu().numpy()
-        intersection_meter.update(intersection), union_meter.update(union), target_meter.update(target)
+    #     intersection, union, target = intersection.cpu().numpy(), union.cpu().numpy(), target.cpu().numpy()
+    #     intersection_meter.update(intersection), union_meter.update(union), target_meter.update(target)
 
-        ious.append(intersection / (union + 1e-10))
-        accs.append(intersection / (target + 1e-10))
+    #     ious.append(intersection / (union + 1e-10))
+    #     accs.append(intersection / (target + 1e-10))
 
-        batch_time.update(time.time() - end)
-        end = time.time()
-        print(f"{i+1}/{len(val_loader)}")
+    #     batch_time.update(time.time() - end)
+    #     end = time.time()
+    #     print(f"{i+1}/{len(val_loader)}")
 
-    iou_class = intersection_meter.sum / (union_meter.sum + 1e-10)
-    accuracy_class = intersection_meter.sum / (target_meter.sum + 1e-10)
-    mIoU = np.mean(iou_class)
-    mAcc = np.mean(accuracy_class)
-    allAcc = sum(intersection_meter.sum) / (sum(target_meter.sum) + 1e-10)
-    print('Val result: mIoU/mAcc/allAcc {:.4f}/{:.4f}/{:.4f}.'.format(mIoU, mAcc, allAcc))
+    # iou_class = intersection_meter.sum / (union_meter.sum + 1e-10)
+    # accuracy_class = intersection_meter.sum / (target_meter.sum + 1e-10)
+    # mIoU = np.mean(iou_class)
+    # mAcc = np.mean(accuracy_class)
+    # allAcc = sum(intersection_meter.sum) / (sum(target_meter.sum) + 1e-10)
+    # print('Val result: mIoU/mAcc/allAcc {:.4f}/{:.4f}/{:.4f}.'.format(mIoU, mAcc, allAcc))
 
-    return loss_meter.avg, np.round(mIoU, 4), np.round(mAcc, 4), np.round(allAcc, 4)
+    return None, None, None, None
+    # return loss_meter.avg, np.round(mIoU, 4), np.round(mAcc, 4), np.round(allAcc, 4)
 
 def main(model, decay=5e-4, num_layers=1):
     # define optimizer
@@ -209,13 +221,13 @@ def main(model, decay=5e-4, num_layers=1):
     #     if name.find('BatchNorm') != -1:
     #         for param in child.parameters():
     #             params_list.append(dict(param, lr=learning_rate))
-    modules_list = [model.context_head.layer1, model.context_head.layer2, model.film_head.layer1, model.film_head.layer2, model.decode_head.conv_seg
-                    ]
-    params_list = []
-    for module in modules_list:
-        params_list.append(dict(params=module.parameters(), lr=learning_rate))
-    # params_list = [dict(model.parameters(), lr=learning_rate)]
-    optimizer = torch.optim.SGD(params_list, lr=learning_rate, weight_decay=decay, momentum=0.9)
+    # modules_list = [model.context_head.layer1, model.context_head.layer2, model.film_head.layer1, model.film_head.layer2, model.decode_head.conv_seg
+    #                 ]
+    # params_list = []
+    # for module in modules_list:
+    #     params_list.append(dict(params=module.parameters(), lr=learning_rate))
+    # # params_list = [dict(model.parameters(), lr=learning_rate)]
+    # optimizer = torch.optim.SGD(params_list, lr=learning_rate, weight_decay=decay, momentum=0.9)
 
     
     train_transform = transform.Compose([
@@ -228,40 +240,40 @@ def main(model, decay=5e-4, num_layers=1):
         transform.Normalize(mean=mean, std=std)
     ])
 
-    train_data = dataset.SemData(split='train', data_root=data_root, data_list=train_list, transform=train_transform, context_x=False, context_y=True, context_type="classification")
-    train_loader = torch.utils.data.DataLoader(train_data, batch_size=batch_size, shuffle=True, num_workers=6, pin_memory=True, sampler=None, drop_last=True)
+    train_data = dataset.SemData(split='train', data_root=data_root, data_list=train_list, transform=train_transform, context_x=False, context_y=False, context_type="classification")
+    train_loader = torch.utils.data.DataLoader(train_data, batch_size=batch_size, shuffle=True, num_workers=2, pin_memory=True, sampler=None, drop_last=True)
 
     train_epochs = [ ]
     val_epochs = [ ]
     test_epochs = [ ]
     for epoch in range(0, epochs):
         print(">>> BEGIN TRAIN EPOCH <<<")
-        loss, t_mIoU, t_mAcc, t_allAcc = train(train_loader, model, optimizer, epoch)
-        train_epochs.append((loss, t_mIoU, t_allAcc))
-        print(">>> COMPUTING VALIDATION ERROR <<<")
-        val_loss, val_mIoU, val_mAcc, val_allAcc = validate(model, data_list=valid_list)
-        val_score = (val_mIoU + val_allAcc) / 2
-        print(f">>> VALIDATION SCORE FOR EPOCH {epoch}: {np.round(val_score, 4)}, loss: {val_loss}")
-        val_epochs.append((val_mIoU, val_allAcc, val_score))
-        print(">>> COMPUTING TEST ERROR <<<")
-        test_loss, test_mIoU, test_mAcc, test_allAcc = validate(model, data_list=test_list)
-        test_score = (test_mIoU + test_allAcc) / 2
-        print(f">>> TEST SCORE FOR EPOCH {epoch}: {np.round(test_score, 4)}, loss: {test_loss}")
-        test_epochs.append((test_mIoU, test_allAcc, test_score))
+        # loss, t_mIoU, t_mAcc, t_allAcc = train(train_loader, model, optimizer, epoch)
+        # train_epochs.append((loss, t_mIoU, t_allAcc))
+        # print(">>> COMPUTING VALIDATION ERROR <<<")
+        val_loss, val_mIoU, val_mAcc, val_allAcc = validate(model, data_list=train_list)
+        # val_score = (val_mIoU + val_allAcc) / 2
+        # print(f">>> VALIDATION SCORE FOR EPOCH {epoch}: {np.round(val_score, 4)}, loss: {val_loss}")
+        # val_epochs.append((val_mIoU, val_allAcc, val_score))
+        # print(">>> COMPUTING TEST ERROR <<<")
+        # test_loss, test_mIoU, test_mAcc, test_allAcc = validate(model, data_list=test_list)
+        # test_score = (test_mIoU + test_allAcc) / 2
+        # print(f">>> TEST SCORE FOR EPOCH {epoch}: {np.round(test_score, 4)}, loss: {test_loss}")
+        # test_epochs.append((test_mIoU, test_allAcc, test_score))
 
-        save_path = f"uper_film_resnet_cls_{epoch}.pth"
-        print(f"Saving to {save_path}")
-        torch.save({'state_dict': model.state_dict(), 'optimizer': optimizer.state_dict()}, save_path)
+        # save_path = f"uper_film_resnet_cls_{epoch}.pth"
+        # print(f"Saving to {save_path}")
+        # torch.save({'state_dict': model.state_dict(), 'optimizer': optimizer.state_dict()}, save_path)
         
     print(f"Validation Epochs: {val_epochs}")
     print(f"Test Epochs: {test_epochs}")
     return val_epochs, test_epochs
 
-classification_weights = "uper_film_resnet_cls_2.pth"
+# classification_weights = "uper_film_resnet_cls_2.pth"
 
 if __name__ == "__main__":
-    film_layers = 1 if len(sys.argv) < 2 else int(sys.argv[1])
-    print(f"Training with {film_layers} new layers")
-    model_conv = UPerNet(backbone="resnet", learn_context=True, init_weights=classification_weights, context_layers=2, film=True, film_layers=2).to("cuda")
-    val_hist_conv = main(model_conv, num_layers=film_layers)
+    # film_layers = 1 if len(sys.argv) < 2 else int(sys.argv[1])
+    # print(f"Training with {film_layers} new layers")
+    model = UPerNet(backbone="resnet", fm_scale=8, pretrained=True).cuda()
+    val_hist_conv = main(model)
     print(val_hist_conv)  # print val results again
