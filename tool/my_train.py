@@ -57,34 +57,8 @@ def worker_init_fn(worker_id):
 def main_process():
     return not args.multiprocessing_distributed or (args.multiprocessing_distributed and args.rank % args.ngpus_per_node == 0)
 
-
-def check(args):
-    assert args.classes > 1
-    assert args.zoom_factor in [1, 2, 4, 8]
-    if args.arch == 'psp':
-        assert (args.train_h - 1) % 8 == 0 and (args.train_w - 1) % 8 == 0
-    elif args.arch == 'psa':
-        if args.compact:
-            args.mask_h = (args.train_h - 1) // (8 * args.shrink_factor) + 1
-            args.mask_w = (args.train_w - 1) // (8 * args.shrink_factor) + 1
-        else:
-            assert (args.mask_h is None and args.mask_w is None) or (
-                        args.mask_h is not None and args.mask_w is not None)
-            if args.mask_h is None and args.mask_w is None:
-                args.mask_h = 2 * ((args.train_h - 1) // (8 * args.shrink_factor) + 1) - 1
-                args.mask_w = 2 * ((args.train_w - 1) // (8 * args.shrink_factor) + 1) - 1
-            else:
-                assert (args.mask_h % 2 == 1) and (args.mask_h >= 3) and (
-                        args.mask_h <= 2 * ((args.train_h - 1) // (8 * args.shrink_factor) + 1) - 1)
-                assert (args.mask_w % 2 == 1) and (args.mask_w >= 3) and (
-                        args.mask_w <= 2 * ((args.train_h - 1) // (8 * args.shrink_factor) + 1) - 1)
-    else:
-        raise Exception('architecture not supported yet'.format(args.arch))
-
-
 def main():
     args = get_parser()
-    check(args)
     os.environ["CUDA_VISIBLE_DEVICES"] = ','.join(str(x) for x in args.train_gpu)
     if args.manual_seed is not None:
         random.seed(args.manual_seed)
@@ -124,7 +98,7 @@ def main_worker(gpu, ngpus_per_node, argss, fine_tune=False, classification_x=Fa
     criterion = nn.CrossEntropyLoss(ignore_index=args.ignore_label)
     model = UPerNet(backbone="resnet")
     modules_ori = [model.backbone]
-    modules_new = [model.decode_head, model.aux_head]
+    modules_new = [model.decode_head, model.aux_bottleneck, model.aux_prediction, model.main_prediction]
     params_list = []
     for module in modules_ori:
         params_list.append(dict(params=module.parameters(), lr=args.base_lr))
@@ -256,8 +230,11 @@ def train(train_loader, model, optimizer, epoch):
         input = input.cuda(non_blocking=True)
         target = target.cuda(non_blocking=True)
         output, main_loss, aux_loss = model(input, target)
+        main_loss = main_loss[0] + main_loss[1]
+        aux_loss = aux_loss[0] + aux_loss[1]
         if not args.multiprocessing_distributed:
-            main_loss, aux_loss = torch.mean(main_loss), torch.mean(aux_loss)
+            main_loss = main_loss.mean()
+            aux_loss = aux_loss.mean()
         loss = main_loss + args.aux_weight * aux_loss
 
         optimizer.zero_grad()

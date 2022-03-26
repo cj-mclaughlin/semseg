@@ -79,7 +79,9 @@ class UPerNet(nn.Module):
         self.segmentation_loss = nn.CrossEntropyLoss(ignore_index=255)
         self.classification_loss = nn.BCELoss()
 
-        self.aux_bottleneck = ConvBnRelu(in_features=1024, out_features=256, dropout=0)
+        self.dropout = nn.Dropout2d(p=0.1)
+
+        self.aux_bottleneck = ConvBnRelu(in_features=1024, out_features=256, dropout=0.1)
         self.aux_prediction = JointPrediction(in_features=256, classes=150)
         self.main_prediction = JointPrediction(in_features=512, classes=150)
 
@@ -123,6 +125,7 @@ class UPerNet(nn.Module):
                 align_corners=self.decode_head.align_corners)
         fpn_outs = torch.cat(fpn_outs, dim=1)
         pre_cls = self.decode_head.fpn_bottleneck(fpn_outs)
+        pre_cls = self.dropout(pre_cls)
         return pre_cls
 
     def forward(self, x, y=None):
