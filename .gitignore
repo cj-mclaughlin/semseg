@@ -2,6 +2,9 @@
 # Numpy Archives
 *.gz
 
+# Pickles
+*.pkl
+
 # Compiled Object files
 *.slo
 *.lo

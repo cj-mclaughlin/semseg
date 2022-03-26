@@ -37,8 +37,35 @@ class FCNHead(nn.Module):
             x = nn.Sigmoid()(x)
         return x
 
+class ConvBnRelu(nn.Module):
+    def __init__(self, in_features=256, out_features=256, dropout=0.1):
+        super(ConvBnRelu, self).__init__()
+        self.layer1 = nn.Conv2d(in_features, out_features, kernel_size=1, bias=False)
+        self.bn = nn.BatchNorm2d(out_features)
+        self.dropout = nn.Dropout2d(p=dropout) if dropout > 0 else None
+
+    def forward(self, x):
+        x = self.layer1(x)
+        x = self.bn(x)
+        x = nn.ReLU()(x)
+        if self.dropout is not None:
+            x = self.dropout(x)
+        return x
+
+class JointPrediction(nn.Module):
+    def __init__(self, in_features=256, classes=150):
+        super(JointPrediction, self).__init__()
+        self.layer1 = nn.Conv2d(in_features, classes, kernel_size=1, bias=True)
+
+    def forward(self, x):
+        classification = nn.AdaptiveAvgPool2d((1,1))(x)
+        classification = self.layer1(classification)
+        classification = nn.Sigmoid()(classification)
+        x = self.layer1(x)
+        return x, classification
+
 class UPerNet(nn.Module):
-    def __init__(self, backbone="resnet", aux_class=False, init_weights=None, pretrained=False, fm_scale=4, pool=False):
+    def __init__(self, backbone="resnet", init_weights=None, pretrained=False):
         super(UPerNet, self).__init__()
         assert backbone in ["resnet", "swin"]
         config = resnet_config if backbone == "resnet" else swin_config
@@ -48,22 +75,19 @@ class UPerNet(nn.Module):
         model = init_segmentor(config, checkpoint, device='cpu')
         self.backbone = model.backbone
         self.decode_head = model.decode_head
-        self.aux_class = aux_class
-        self.aux_head = FCNHead(in_features=1024, pool=False, sigmoid=False)
-        # if not self.aux_class:
-        #     self.aux_head = FCNHead(in_features=1024, pool=False, sigmoid=False)  # for stage4 resnet segmentation
-        # else:
-        #     self.aux_head = FCNHead(in_features=1024, pool=False, sigmoid=True)  # for stage4 resnet classification        
-        self.seg_loss = nn.CrossEntropyLoss(ignore_index=255)
-        self.aux_loss = nn.BCELoss() # if aux_class else nn.CrossEntropyLoss(ignore_index=255)
 
-        self.fusion_upsample = nn.Upsample(size=(512 // fm_scale), mode="bilinear", align_corners=False)
+        self.segmentation_loss = nn.CrossEntropyLoss(ignore_index=255)
+        self.classification_loss = nn.BCELoss()
+
+        self.aux_bottleneck = ConvBnRelu(in_features=1024, out_features=256, dropout=0)
+        self.aux_prediction = JointPrediction(in_features=256, classes=150)
+        self.main_prediction = JointPrediction(in_features=512, classes=150)
 
         if init_weights is not None:
             checkpoint = torch.load(init_weights)["state_dict"]
             self.load_state_dict(checkpoint, strict=False)
 
-    def upernet_forward(self, inputs, pool):
+    def upernet_forward(self, inputs):
         inputs = self.decode_head._transform_inputs(inputs)
 
         # build laterals
@@ -91,59 +115,54 @@ class UPerNet(nn.Module):
         # append psp feature
         fpn_outs.append(laterals[-1])
 
-        for i in range(len(fpn_outs)):
-            fpn_outs[i] = self.fusion_upsample(fpn_outs[i])
+        for i in range(used_backbone_levels - 1, 0, -1):
+            fpn_outs[i] = resize(
+                fpn_outs[i],
+                size=fpn_outs[0].shape[2:],
+                mode='bilinear',
+                align_corners=self.decode_head.align_corners)
         fpn_outs = torch.cat(fpn_outs, dim=1)
         pre_cls = self.decode_head.fpn_bottleneck(fpn_outs)
-        if pool:
-            pre_cls = nn.AdaptiveAvgPool2d(output_size=(1,1))(pre_cls)
-        logits = self.decode_head.cls_seg(pre_cls)
-        return logits
+        return pre_cls
 
     def forward(self, x, y=None):
         h, w = x.size()[2:]
-        # seg_label = y[0]
-        # cls_label = y[1]
-        self.eval()
+
         stages = self.backbone(x)
-        seg_x = self.upernet_forward(stages, pool=False)
+        x = self.upernet_forward(stages)
 
-        # losses = []
-        # for label_scale in [1, 2, 4, 8]:
-        #     x = F.interpolate(seg_x, size=(h // label_scale, w // label_scale), mode="bilinear", align_corners=False)
-        #     y = F.interpolate(seg_label.unsqueeze(1).float(), size=(h // label_scale, w // label_scale), mode="nearest")[:,0].long()
-        #     losses.append(self.seg_loss(x, y))
-        
-        # cls_x = self.upernet_forward(stages, pool=True)
-        # cls_x = nn.Sigmoid()(cls_x)
-        # losses.append(self.aux_loss(cls_x, cls_label))
+        main_seg, main_class = self.main_prediction(x)
 
-        return seg_x        
-        # # faster inference
-        # if y is None:
-        #     return x
+        main_seg = F.interpolate(main_seg, size=(h, w), mode="bilinear", align_corners=False)
 
-        # # collect losses
-        # seg_loss = self.seg_loss(x, y[0])
-        # # auxiliary prediction
-        # aux_pred = self.aux_head(stages[2])
-        # if self.aux_class:  # classification
-        #     aux_loss = self.seg_loss(aux_pred, y[1])
-        # else:
-        #     aux_pred = F.interpolate(aux_pred, size=(h,w), mode="bilinear", align_corners=self.decode_head.align_corners)
-        #     aux_loss = self.seg_loss(aux_pred, y[0])
+        if self.training: 
+            seg_label = y[0]
+            class_label = y[1]
+            aux = self.aux_bottleneck(stages[-2])
+            aux_seg, aux_class = self.aux_prediction(aux)
+            aux_seg = F.interpolate(aux_seg, size=(h,w), mode="bilinear", align_corners=False)
 
-        # return x, seg_loss, aux_loss
+            aux_loss = [self.segmentation_loss(aux_seg, seg_label), self.classification_loss(aux_class, class_label)]
+            main_loss = [self.segmentation_loss(main_seg, seg_label), self.classification_loss(main_class, class_label)]
 
+            return main_seg, main_loss, aux_loss
+
+        else:
+            return main_seg   
 
 if __name__ == "__main__":
+    model = UPerNet()
+    x = torch.rand(size=(8, 3, 512, 512))
+    y = [torch.rand(size=(8, 512, 512)), torch.rand(size=(8, 150, 512, 512))]
+    model.forward(x, y)
+
     # for each feature map size, compute mem MACs
-    for fm_scale in [4, 8, 16, 32]:
-        from ptflops import get_model_complexity_info
-        model = UPerNet(backbone="resnet", fm_scale=fm_scale)
-        macs, params = get_model_complexity_info(model, (3, 512, 512), as_strings=True, print_per_layer_stat=False, verbose=False)
-        print(f"Statistics for feature map scale {fm_scale}")
-        print('{:<30}  {:<8}'.format('Computational complexity: ', macs))
+    # for fm_scale in [4, 8, 16, 32]:
+    #     from ptflops import get_model_complexity_info
+    #     model = UPerNet(backbone="resnet", fm_scale=fm_scale)
+    #     macs, params = get_model_complexity_info(model, (3, 512, 512), as_strings=True, print_per_layer_stat=False, verbose=False)
+    #     print(f"Statistics for feature map scale {fm_scale}")
+    #     print('{:<30}  {:<8}'.format('Computational complexity: ', macs))
         # print('{:<30}  {:<8}'.format('Number of parameters: ', params))
 
     # for each feature map size, compute gradient at several locations w.r.t. [1, 2, 4, 8, 16] scale segmentation, as well as classification
