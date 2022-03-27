@@ -1,13 +1,13 @@
-#!/bin/sh
+#!/bin/bash
+#SBATCH -p whitehill
+#SBATCH --nodes=2
+#SBATCH --gres=gpu:2
+#SBATCH --ntasks-per-node=2
 
-## uncomment for slurm
-#SBATCH -p gpu
-#SBATCH --gres=gpu:8
-#SBATCH -c 80
+source ~/venv/bin/activate
 
 export PYTHONPATH=./
-eval "$(conda shell.bash hook)"
-conda activate pt140  # pytorch 1.4.0 env
+
 PYTHON=python
 
 dataset=$1
@@ -19,13 +19,13 @@ config=config/${dataset}/${dataset}_${exp_name}.yaml
 now=$(date +"%Y%m%d_%H%M%S")
 
 mkdir -p ${model_dir} ${result_dir}
-cp tool/train.sh tool/train.py tool/test.sh tool/test.py ${config} ${exp_dir}
+cp tool/my_train.sh tool/my_train.py tool/test.sh tool/my_test.py ${config} ${exp_dir}
 
 export PYTHONPATH=./
 $PYTHON -u ${exp_dir}/my_train.py \
   --config=${config} \
   2>&1 | tee ${model_dir}/train-$now.log
 
-$PYTHON -u ${exp_dir}/test.py \
-  --config=${config} \
-  2>&1 | tee ${result_dir}/test-$now.log
+# $PYTHON -u ${exp_dir}/my_test.py \
+#   --config=${config} \
+#   2>&1 | tee ${result_dir}/test-$now.log
