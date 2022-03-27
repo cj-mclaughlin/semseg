@@ -68,7 +68,6 @@ def check(args):
 def main():
     global args, logger
     args = get_parser()
-    check(args)
     logger = get_logger()
     os.environ["CUDA_VISIBLE_DEVICES"] = ','.join(str(x) for x in args.test_gpu)
     logger.info(args)

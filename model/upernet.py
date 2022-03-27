@@ -60,7 +60,7 @@ class JointPrediction(nn.Module):
     def forward(self, x):
         classification = nn.AdaptiveAvgPool2d((1,1))(x)
         classification = self.layer1(classification)
-        classification = nn.Sigmoid()(classification)
+        # classification = nn.Sigmoid()(classification)
         x = self.layer1(x)
         return x, classification
 
@@ -77,11 +77,17 @@ class UPerNet(nn.Module):
         self.decode_head = model.decode_head
 
         self.segmentation_loss = nn.CrossEntropyLoss(ignore_index=255)
-        self.classification_loss = nn.BCELoss()
+        self.classification_loss = nn.BCEWithLogitsLoss()
 
         self.dropout = nn.Dropout2d(p=0.1)
 
-        self.aux_bottleneck = ConvBnRelu(in_features=1024, out_features=256, dropout=0.1)
+        self.aux_bottleneck = nn.Sequential(
+            nn.Conv2d(1024, 256, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(256),
+            nn.ReLU(inplace=True),
+            nn.Dropout2d(p=0.1),
+        )
+        
         self.aux_prediction = JointPrediction(in_features=256, classes=150)
         self.main_prediction = JointPrediction(in_features=512, classes=150)
 
@@ -110,23 +116,23 @@ class UPerNet(nn.Module):
                 align_corners=self.decode_head.align_corners)
 
         # build outputs
-        fpn_outs = [
+        outputs = [
             self.decode_head.fpn_convs[i](laterals[i])
             for i in range(used_backbone_levels - 1)
         ]
         # append psp feature
-        fpn_outs.append(laterals[-1])
+        outputs.append(laterals[-1])
 
         for i in range(used_backbone_levels - 1, 0, -1):
-            fpn_outs[i] = resize(
-                fpn_outs[i],
-                size=fpn_outs[0].shape[2:],
+            outputs[i] = resize(
+                outputs[i],
+                size=outputs[0].shape[2:],
                 mode='bilinear',
                 align_corners=self.decode_head.align_corners)
-        fpn_outs = torch.cat(fpn_outs, dim=1)
-        pre_cls = self.decode_head.fpn_bottleneck(fpn_outs)
-        pre_cls = self.dropout(pre_cls)
-        return pre_cls
+        outputs = torch.cat(outputs, dim=1)
+        outputs = self.decode_head.fpn_bottleneck(outputs)
+        outputs = self.dropout(outputs)
+        return outputs
 
     def forward(self, x, y=None):
         h, w = x.size()[2:]
@@ -135,7 +141,6 @@ class UPerNet(nn.Module):
         x = self.upernet_forward(stages)
 
         main_seg, main_class = self.main_prediction(x)
-
         main_seg = F.interpolate(main_seg, size=(h, w), mode="bilinear", align_corners=False)
 
         if self.training: 

@@ -18,6 +18,10 @@ import torch.multiprocessing as mp
 import torch.distributed as dist
 from tensorboardX import SummaryWriter
 
+import sys, os
+sys.path.insert(0, os.path.abspath('.'))
+sys.path.insert(1, os.path.abspath('..'))
+
 from util import dataset, transform, config
 from util.util import AverageMeter, poly_learning_rate, intersectionAndUnionGPU, find_free_port
 
@@ -95,7 +99,6 @@ def main_worker(gpu, ngpus_per_node, argss, fine_tune=False, classification_x=Fa
             args.rank = args.rank * ngpus_per_node + gpu
         dist.init_process_group(backend=args.dist_backend, init_method=args.dist_url, world_size=args.world_size, rank=args.rank)
 
-    criterion = nn.CrossEntropyLoss(ignore_index=args.ignore_label)
     model = UPerNet(backbone="resnet")
     modules_ori = [model.backbone]
     modules_new = [model.decode_head, model.aux_bottleneck, model.aux_prediction, model.main_prediction]
@@ -116,9 +119,12 @@ def main_worker(gpu, ngpus_per_node, argss, fine_tune=False, classification_x=Fa
         logger.info(args)
         logger.info("=> creating model ...")
         logger.info("Classes: {}".format(args.classes))
+        logger.info(f"Batch size per gpu: {int(args.batch_size / ngpus_per_node)}")
+        logger.info(f"Cuda devices", torch.cuda.device_count())
         logger.info(model)
     if args.distributed:
         torch.cuda.set_device(gpu)
+        # logger.info(f"Batch size per gpu: {int(args.batch_size / ngpus_per_node)}")
         args.batch_size = int(args.batch_size / ngpus_per_node)
         args.batch_size_val = int(args.batch_size_val / ngpus_per_node)
         args.workers = int((args.workers + ngpus_per_node - 1) / ngpus_per_node)
@@ -167,7 +173,7 @@ def main_worker(gpu, ngpus_per_node, argss, fine_tune=False, classification_x=Fa
         transform.Crop([args.train_h, args.train_w], crop_type='rand', padding=mean, ignore_label=args.ignore_label),
         transform.ToTensor(),
         transform.Normalize(mean=mean, std=std)])
-    train_data = dataset.SemData(split='train', data_root=args.data_root, data_list=args.train_list, transform=train_transform, classification_heads_x=classification_x, classification_heads_y=classification_y)
+    train_data = dataset.SemData(split='train', data_root=args.data_root, data_list=args.train_list, transform=train_transform, context_x=classification_x, context_y=classification_y)
     if args.distributed:
         train_sampler = torch.utils.data.distributed.DistributedSampler(train_data)
     else:
@@ -178,18 +184,19 @@ def main_worker(gpu, ngpus_per_node, argss, fine_tune=False, classification_x=Fa
             transform.Crop([args.train_h, args.train_w], crop_type='center', padding=mean, ignore_label=args.ignore_label),
             transform.ToTensor(),
             transform.Normalize(mean=mean, std=std)])
-        val_data = dataset.SemData(split='val', data_root=args.data_root, data_list=args.val_list, transform=val_transform, classification_heads_x=classification_x, classification_heads_y=classification_y)
+        val_data = dataset.SemData(split='val', data_root=args.data_root, data_list=args.val_list, transform=val_transform, context_x=classification_x, context_y=classification_y)
         if args.distributed:
             val_sampler = torch.utils.data.distributed.DistributedSampler(val_data)
         else:
             val_sampler = None
         val_loader = torch.utils.data.DataLoader(val_data, batch_size=args.batch_size_val, shuffle=False, num_workers=args.workers, pin_memory=True, sampler=val_sampler)
 
+    scaler = torch.cuda.amp.GradScaler()
     for epoch in range(args.start_epoch, args.epochs):
         epoch_log = epoch + 1
         if args.distributed:
             train_sampler.set_epoch(epoch)
-        loss_train, mIoU_train, mAcc_train, allAcc_train = train(train_loader, model, optimizer, epoch)
+        loss_train, mIoU_train, mAcc_train, allAcc_train = train(train_loader, model, optimizer, epoch, scaler)
         if main_process():
             writer.add_scalar('loss_train', loss_train, epoch_log)
             writer.add_scalar('mIoU_train', mIoU_train, epoch_log)
@@ -204,7 +211,7 @@ def main_worker(gpu, ngpus_per_node, argss, fine_tune=False, classification_x=Fa
                 deletename = args.save_path + '/train_epoch_' + str(epoch_log - args.save_freq * 2) + '.pth'
                 os.remove(deletename)
         if args.evaluate:
-            loss_val, mIoU_val, mAcc_val, allAcc_val = validate(val_loader, model, criterion)
+            loss_val, mIoU_val, mAcc_val, allAcc_val = validate(val_loader, model, scaler)
             if main_process():
                 writer.add_scalar('loss_val', loss_val, epoch_log)
                 writer.add_scalar('mIoU_val', mIoU_val, epoch_log)
@@ -212,7 +219,7 @@ def main_worker(gpu, ngpus_per_node, argss, fine_tune=False, classification_x=Fa
                 writer.add_scalar('allAcc_val', allAcc_val, epoch_log)
 
 
-def train(train_loader, model, optimizer, epoch):
+def train(train_loader, model, optimizer, epoch, scaler):
     batch_time = AverageMeter()
     data_time = AverageMeter()
     main_loss_meter = AverageMeter()
@@ -226,20 +233,30 @@ def train(train_loader, model, optimizer, epoch):
     end = time.time()
     max_iter = args.epochs * len(train_loader)
     for i, (input, target) in enumerate(train_loader):
+        optimizer.zero_grad()
+        torch.cuda.empty_cache()
         data_time.update(time.time() - end)
-        input = input.cuda(non_blocking=True)
+        target, class_target = target
         target = target.cuda(non_blocking=True)
-        output, main_loss, aux_loss = model(input, target)
-        main_loss = main_loss[0] + main_loss[1]
-        aux_loss = aux_loss[0] + aux_loss[1]
+        class_target = class_target[0].cuda(non_blocking=True)
+        input = input.cuda(non_blocking=True)
+        with torch.cuda.amp.autocast():
+            output, main_loss, aux_loss = model(input, [target, class_target])
+            main_loss = main_loss[0] + main_loss[1]
+            aux_loss = aux_loss[0] + aux_loss[1]
+            # main_loss = main_loss.mean()
+            # aux_loss = aux_loss.mean()
+            # loss = main_loss + 0.4 * aux_loss
         if not args.multiprocessing_distributed:
             main_loss = main_loss.mean()
             aux_loss = aux_loss.mean()
-        loss = main_loss + args.aux_weight * aux_loss
+        loss = main_loss + 0.4 * aux_loss
 
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
+        scaler.scale(loss).backward()
+        scaler.step(optimizer)
+        scaler.update()
+        # loss.backward()
+        # optimizer.step()
 
         n = input.size(0)
         if args.multiprocessing_distributed:
@@ -257,9 +274,9 @@ def train(train_loader, model, optimizer, epoch):
         intersection_meter.update(intersection), union_meter.update(union), target_meter.update(target)
 
         accuracy = sum(intersection_meter.val) / (sum(target_meter.val) + 1e-10)
-        main_loss_meter.update(main_loss.item(), n)
-        aux_loss_meter.update(aux_loss.item(), n)
-        loss_meter.update(loss.item(), n)
+        main_loss_meter.update(main_loss.detach().item(), n)
+        aux_loss_meter.update(aux_loss.detach().item(), n)
+        loss_meter.update(loss.detach().item(), n)
         batch_time.update(time.time() - end)
         end = time.time()
 
@@ -307,7 +324,7 @@ def train(train_loader, model, optimizer, epoch):
     return main_loss_meter.avg, mIoU, mAcc, allAcc
 
 
-def validate(val_loader, model, criterion):
+def validate(val_loader, model, scaler):
     if main_process():
         logger.info('>>>>>>>>>>>>>>>> Start Evaluation >>>>>>>>>>>>>>>>')
     batch_time = AverageMeter()
@@ -322,9 +339,12 @@ def validate(val_loader, model, criterion):
     for i, (input, target) in enumerate(val_loader):
         data_time.update(time.time() - end)
         input = input.cuda(non_blocking=True)
+        target, class_target = target
         target = target.cuda(non_blocking=True)
+        class_target = class_target[0].cuda(non_blocking=True)
         output = model(input)
-        loss = criterion(output, target)
+        output = output.max(1)[1]
+        loss = model.segmentation_loss(output, target)
 
         n = input.size(0)
         if args.multiprocessing_distributed:
@@ -379,3 +399,4 @@ def my_main():
 
 if __name__ == '__main__':
     main()
+    # my_main()
