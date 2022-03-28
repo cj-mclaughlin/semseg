@@ -101,14 +101,15 @@ def main_worker(gpu, ngpus_per_node, argss, fine_tune=False, classification_x=Fa
 
     model = UPerNet(backbone="resnet")
     modules_ori = [model.backbone]
-    modules_new = [model.decode_head, model.aux_bottleneck, model.aux_prediction, model.main_prediction]
+    modules_new = [model.decode_head, model.aux_bottleneck, model.aux_prediction] #model.main_prediction
     params_list = []
     for module in modules_ori:
-        params_list.append(dict(params=module.parameters(), lr=args.base_lr))
+        params_list.append(dict(params=module.parameters(), lr=args.base_lr * 0.1))
     for module in modules_new:
-        params_list.append(dict(params=module.parameters(), lr=args.base_lr * 10))
+        params_list.append(dict(params=module.parameters(), lr=args.base_lr))
     args.index_split = 1
-    optimizer = torch.optim.SGD(params_list, lr=args.base_lr, momentum=args.momentum, weight_decay=args.weight_decay)
+    # optimizer = torch.optim.SGD(params_list, lr=args.base_lr, momentum=args.momentum, weight_decay=args.weight_decay)
+    optimizer = torch.optim.AdamW(params_list, lr=args.base_lr, weight_decay=args.weight_decay)
     if args.sync_bn:
         model = nn.SyncBatchNorm.convert_sync_batchnorm(model)
 
@@ -120,7 +121,7 @@ def main_worker(gpu, ngpus_per_node, argss, fine_tune=False, classification_x=Fa
         logger.info("=> creating model ...")
         logger.info("Classes: {}".format(args.classes))
         logger.info(f"Batch size per gpu: {int(args.batch_size / ngpus_per_node)}")
-        logger.info(f"Cuda devices", torch.cuda.device_count())
+        logger.info(f"Running with {torch.cuda.device_count()} gpus, devices: {[torch.cuda.get_device_name(d) for d in range(torch.cuda.device_count())]}", )
         logger.info(model)
     if args.distributed:
         torch.cuda.set_device(gpu)
@@ -283,9 +284,9 @@ def train(train_loader, model, optimizer, epoch, scaler):
         current_iter = epoch * len(train_loader) + i + 1
         current_lr = poly_learning_rate(args.base_lr, current_iter, max_iter, power=args.power)
         for index in range(0, args.index_split):
-            optimizer.param_groups[index]['lr'] = current_lr
+            optimizer.param_groups[index]['lr'] = current_lr * 0.1
         for index in range(args.index_split, len(optimizer.param_groups)):
-            optimizer.param_groups[index]['lr'] = current_lr * 10
+            optimizer.param_groups[index]['lr'] = current_lr
         remain_iter = max_iter - current_iter
         remain_time = remain_iter * batch_time.avg
         t_m, t_s = divmod(remain_time, 60)
