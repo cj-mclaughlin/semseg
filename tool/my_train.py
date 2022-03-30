@@ -30,6 +30,7 @@ from model.upernet import UPerNet
 cv2.ocl.setUseOpenCL(False)
 cv2.setNumThreads(0)
 
+# torch.backends.cudnn.benchmark = True
 
 def get_parser():
     parser = argparse.ArgumentParser(description='PyTorch Semantic Segmentation')
@@ -89,7 +90,7 @@ def main():
         main_worker(args.train_gpu, args.ngpus_per_node, args)
 
 
-def main_worker(gpu, ngpus_per_node, argss, fine_tune=False, classification_x=False, classification_y=True):
+def main_worker(gpu, ngpus_per_node, argss, fine_tune=False):
     global args
     args = argss
     if args.distributed:
@@ -101,7 +102,7 @@ def main_worker(gpu, ngpus_per_node, argss, fine_tune=False, classification_x=Fa
 
     model = UPerNet(backbone="resnet")
     modules_ori = [model.backbone]
-    modules_new = [model.decode_head, model.aux_bottleneck, model.aux_prediction] #model.main_prediction
+    modules_new = [model.decode_head, model.aux_bottleneck, model.aux_prediction, model.main_prediction] #model.main_prediction
     params_list = []
     for module in modules_ori:
         params_list.append(dict(params=module.parameters(), lr=args.base_lr * 0.1))
@@ -174,7 +175,7 @@ def main_worker(gpu, ngpus_per_node, argss, fine_tune=False, classification_x=Fa
         transform.Crop([args.train_h, args.train_w], crop_type='rand', padding=mean, ignore_label=args.ignore_label),
         transform.ToTensor(),
         transform.Normalize(mean=mean, std=std)])
-    train_data = dataset.SemData(split='train', data_root=args.data_root, data_list=args.train_list, transform=train_transform, context_x=classification_x, context_y=classification_y)
+    train_data = dataset.SemData(split='train', data_root=args.data_root, data_list=args.train_list, transform=train_transform)
     if args.distributed:
         train_sampler = torch.utils.data.distributed.DistributedSampler(train_data)
     else:
@@ -185,7 +186,7 @@ def main_worker(gpu, ngpus_per_node, argss, fine_tune=False, classification_x=Fa
             transform.Crop([args.train_h, args.train_w], crop_type='center', padding=mean, ignore_label=args.ignore_label),
             transform.ToTensor(),
             transform.Normalize(mean=mean, std=std)])
-        val_data = dataset.SemData(split='val', data_root=args.data_root, data_list=args.val_list, transform=val_transform, context_x=classification_x, context_y=classification_y)
+        val_data = dataset.SemData(split='val', data_root=args.data_root, data_list=args.val_list, transform=val_transform)
         if args.distributed:
             val_sampler = torch.utils.data.distributed.DistributedSampler(val_data)
         else:
@@ -237,12 +238,10 @@ def train(train_loader, model, optimizer, epoch, scaler):
         optimizer.zero_grad()
         torch.cuda.empty_cache()
         data_time.update(time.time() - end)
-        target, class_target = target
         target = target.cuda(non_blocking=True)
-        class_target = class_target[0].cuda(non_blocking=True)
         input = input.cuda(non_blocking=True)
         with torch.cuda.amp.autocast():
-            output, main_loss, aux_loss = model(input, [target, class_target])
+            output, main_loss, aux_loss = model(input, target)
             main_loss = main_loss[0] + main_loss[1]
             aux_loss = aux_loss[0] + aux_loss[1]
             # main_loss = main_loss.mean()
@@ -340,9 +339,7 @@ def validate(val_loader, model, scaler):
     for i, (input, target) in enumerate(val_loader):
         data_time.update(time.time() - end)
         input = input.cuda(non_blocking=True)
-        target, class_target = target
         target = target.cuda(non_blocking=True)
-        class_target = class_target[0].cuda(non_blocking=True)
         output = model(input)
         output = output.max(1)[1]
         loss = model.segmentation_loss(output, target)

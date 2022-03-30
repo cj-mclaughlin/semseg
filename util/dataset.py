@@ -3,6 +3,7 @@ import os.path
 import cv2
 import numpy as np
 
+import torch
 from torch.utils.data import Dataset
 from .classification_utils import extract_mask_classes, extract_mask_distributions
 
@@ -48,7 +49,7 @@ def make_dataset(split='train', data_root=None, data_list=None):
     print("Checking image&label pair {} list done!".format(split))
     return image_label_list
 
-
+import time
 class SemData(Dataset):
     def __init__(self, split='train', context_x=False, context_y=False, context_type="classification", data_root=None, data_list=None, transform=None):
         assert context_type in ["classification", "distribution", "both"]
@@ -73,15 +74,22 @@ class SemData(Dataset):
             raise (RuntimeError("Image & label shape mismatch: " + image_path + " " + label_path + "\n"))
         if self.transform is not None:
             image, label = self.transform(image, label)
-        if self.context_x or self.context_y:
-            if self.context_type == "classification":
-                context = extract_mask_classes(label)
-            elif self.context_type == "distribution":
-                context = extract_mask_distributions(label, head_sizes=[1])
-            elif self.context_type == "both":
-                context = (extract_mask_classes(label, head_sizes=[1]), extract_mask_distributions(label, head_sizes=[1]))
-            if self.context_x:
-                image = (image, context)
-            if self.context_y:
-                label = (label, context)
+        # if self.context_x or self.context_y:
+        #     if self.context_type == "classification":
+        #         s1 = time.time()
+        #         context = extract_mask_classes(label, head_sizes=[1])
+        #         e1 = time.time() - s1
+        #         s2 = time.time()
+        #         context2 = _convert_to_onehot_labels(label, num_classes=150)
+        #         e2 = time.time()
+        #     elif self.context_type == "distribution":
+        #         context = extract_mask_distributions(label, head_sizes=[1])
+        #     elif self.context_type == "both":
+        #         context = (extract_mask_classes(label, head_sizes=[1]), extract_mask_distributions(label, head_sizes=[1]))
+        #     if self.context_x:
+        #         image = (image, context)
+        #     if self.context_y:
+        #         label = (label, context)
         return image, label
+
+

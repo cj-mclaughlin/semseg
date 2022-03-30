@@ -60,7 +60,6 @@ class JointPrediction(nn.Module):
     def forward(self, x):
         classification = nn.AdaptiveAvgPool2d((1,1))(x)
         classification = self.layer1(classification)
-        # classification = nn.Sigmoid()(classification)
         x = self.layer1(x)
         return x, classification
 
@@ -144,19 +143,37 @@ class UPerNet(nn.Module):
         main_seg = F.interpolate(main_seg, size=(h, w), mode="bilinear", align_corners=False)
 
         if self.training: 
-            seg_label = y[0]
-            class_label = y[1]
             aux = self.aux_bottleneck(stages[-2])
             aux_seg, aux_class = self.aux_prediction(aux)
             aux_seg = F.interpolate(aux_seg, size=(h,w), mode="bilinear", align_corners=False)
 
-            aux_loss = [self.segmentation_loss(aux_seg, seg_label), self.classification_loss(aux_class, class_label)]
-            main_loss = [self.segmentation_loss(main_seg, seg_label), self.classification_loss(main_class, class_label)]
+            class_label = _convert_to_onehot_labels(y, num_classes=150)
+            aux_loss = [self.segmentation_loss(aux_seg, y), self.classification_loss(torch.squeeze(aux_class), class_label)]
+            main_loss = [self.segmentation_loss(main_seg, y), self.classification_loss(torch.squeeze(main_class), class_label)]
 
             return main_seg, main_loss, aux_loss
 
         else:
             return main_seg   
+
+
+def _convert_to_onehot_labels(seg_label, num_classes):
+    """Convert segmentation label to onehot.
+    Args:
+        seg_label (Tensor): Segmentation label of shape (N, H, W).
+        num_classes (int): Number of classes.
+    Returns:
+        Tensor: Onehot labels of shape (N, num_classes).
+    """
+
+    batch_size = seg_label.size(0)
+    onehot_labels = seg_label.new_zeros((batch_size, num_classes))
+    for i in range(batch_size):
+        hist = seg_label[i].float().histc(
+            bins=num_classes, min=0, max=num_classes - 1)
+        onehot_labels[i] = hist > 0
+    return onehot_labels.float()
+
 
 if __name__ == "__main__":
     model = UPerNet()
