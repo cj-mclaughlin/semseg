@@ -30,7 +30,7 @@ from model.upernet import UPerNet
 cv2.ocl.setUseOpenCL(False)
 cv2.setNumThreads(0)
 
-# torch.backends.cudnn.benchmark = True
+CLASS_LOSS_WEIGHT = 0
 
 def get_parser():
     parser = argparse.ArgumentParser(description='PyTorch Semantic Segmentation')
@@ -242,8 +242,8 @@ def train(train_loader, model, optimizer, epoch, scaler):
         input = input.cuda(non_blocking=True)
         with torch.cuda.amp.autocast():
             output, main_loss, aux_loss = model(input, target)
-            main_loss = main_loss[0] + main_loss[1]
-            aux_loss = aux_loss[0] + aux_loss[1]
+            main_loss = main_loss[0] + CLASS_LOSS_WEIGHT * main_loss[1]
+            aux_loss = aux_loss[0] + CLASS_LOSS_WEIGHT * aux_loss[1]
             # main_loss = main_loss.mean()
             # aux_loss = aux_loss.mean()
             # loss = main_loss + 0.4 * aux_loss
