@@ -21,7 +21,7 @@ TRAIN:
   workers: 4 # 8 # data loader workers (4 * num_gpus)
   batch_size: 16  # batch size for training
   batch_size_val: 8  # batch size for validation during training, memory and speed tradeoff
-  base_lr: 0.0001
+  base_lr: 0.01
   epochs: 128
   start_epoch: 0
   power: 0.9
@@ -52,7 +52,7 @@ TEST:
   index_start: 0  # evaluation start index in list
   index_step: 0  # evaluation step index in list, 0 means to end
   test_gpu: [0]
-  model_path: exp/ade20k/upernet/model/train_epoch_100.pth  # evaluation model path
-  save_folder: exp/ade20k/upernet/result/epoch_100/val/ss  # results save folder
+  model_path: exp/ade20k/upernet/model/train_epoch_128.pth  # evaluation model path
+  save_folder: exp/ade20k/upernet/result/epoch_128/val/ss  # results save folder
   colors_path: data/ade20k/ade20k_colors.txt  # path of dataset colors
   names_path: data/ade20k/ade20k_names.txt  # path of dataset category names

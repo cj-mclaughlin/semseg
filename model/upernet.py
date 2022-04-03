@@ -88,7 +88,7 @@ class UPerNet(nn.Module):
         )
         
         self.aux_prediction = JointPrediction(in_features=256, classes=150)
-        self.main_prediction = JointPrediction(in_features=512, classes=150)
+        # self.main_prediction = JointPrediction(in_features=512, classes=150)
 
         if init_weights is not None:
             checkpoint = torch.load(init_weights)["state_dict"]
@@ -139,8 +139,9 @@ class UPerNet(nn.Module):
         stages = self.backbone(x)
         x = self.upernet_forward(stages)
 
-        main_seg, main_class = self.main_prediction(x)
+        main_seg = self.decode_head.conv_seg(x)
         main_seg = F.interpolate(main_seg, size=(h, w), mode="bilinear", align_corners=False)
+        main_class = self.decode_head.conv_seg(nn.AdaptiveAvgPool2d((1, 1))(x))
 
         if self.training: 
             aux = self.aux_bottleneck(stages[-2])

@@ -102,15 +102,15 @@ def main_worker(gpu, ngpus_per_node, argss, fine_tune=False):
 
     model = UPerNet(backbone="resnet")
     modules_ori = [model.backbone]
-    modules_new = [model.decode_head, model.aux_bottleneck, model.aux_prediction, model.main_prediction] #model.main_prediction
+    modules_new = [model.decode_head, model.aux_bottleneck, model.aux_prediction] #model.main_prediction
     params_list = []
     for module in modules_ori:
         params_list.append(dict(params=module.parameters(), lr=args.base_lr * 0.1))
     for module in modules_new:
         params_list.append(dict(params=module.parameters(), lr=args.base_lr))
     args.index_split = 1
-    # optimizer = torch.optim.SGD(params_list, lr=args.base_lr, momentum=args.momentum, weight_decay=args.weight_decay)
-    optimizer = torch.optim.AdamW(params_list, lr=args.base_lr, weight_decay=args.weight_decay)
+    optimizer = torch.optim.SGD(params_list, lr=args.base_lr, momentum=args.momentum, weight_decay=args.weight_decay)
+    # optimizer = torch.optim.AdamW(params_list, lr=args.base_lr, weight_decay=args.weight_decay)
     if args.sync_bn:
         model = nn.SyncBatchNorm.convert_sync_batchnorm(model)
 
@@ -124,6 +124,7 @@ def main_worker(gpu, ngpus_per_node, argss, fine_tune=False):
         logger.info(f"Batch size per gpu: {int(args.batch_size / ngpus_per_node)}")
         logger.info(f"Running with {torch.cuda.device_count()} gpus, devices: {[torch.cuda.get_device_name(d) for d in range(torch.cuda.device_count())]}", )
         logger.info(model)
+        logger.info(f"Class weight is set to {CLASS_LOSS_WEIGHT}", )
     if args.distributed:
         torch.cuda.set_device(gpu)
         # logger.info(f"Batch size per gpu: {int(args.batch_size / ngpus_per_node)}")

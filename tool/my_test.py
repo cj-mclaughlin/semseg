@@ -10,6 +10,10 @@ import torch.backends.cudnn as cudnn
 import torch.nn.functional as F
 import torch.nn.parallel
 import torch.utils.data
+
+import sys, os
+sys.path.insert(0, os.path.abspath('.'))
+sys.path.insert(1, os.path.abspath('..'))
 from model.upernet import UPerNet
 
 from util import dataset, transform, config
